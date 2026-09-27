@@ -1,0 +1,648 @@
+; ================================================================
+; Project : Hostel Laundry Token & Queue Manager
+; Platform: EMU8086 / 8086 Assembly
+; ================================================================
+
+.MODEL SMALL
+.STACK 100H
+
+MAX_QUEUE    EQU 5
+WASH_RATE    EQU 40
+IRON_RATE    EQU 70
+EXPRESS_RATE EQU 100
+
+.DATA
+
+TITLE_MSG DB 13,10,'==================================================',13,10
+          DB '      HOSTEL LAUNDRY TOKEN & QUEUE MANAGER',13,10
+          DB '==================================================',13,10,'$'
+
+MENU_MSG DB 13,10,'1. Add a laundry order',13,10
+         DB '2. Process the next order',13,10
+         DB '3. View queue summary',13,10
+         DB '4. Exit',13,10
+         DB 'Choose an option (1-4): $'
+
+PROMPT_ROOM DB 13,10,'Enter hostel room number (1-999): $'
+
+PROMPT_SERVICE DB 13,10,'Select service type:',13,10
+               DB '  1. Wash only       - 40 BDT per cloth',13,10
+               DB '  2. Wash and iron   - 70 BDT per cloth',13,10
+               DB '  3. Express service - 100 BDT per cloth',13,10
+               DB 'Enter service number (1-3): $'
+
+PROMPT_CLOTHES DB 13,10,'Enter number of clothes (1-20): $'
+
+MSG_INVALID_MENU    DB 13,10,'Invalid option. Enter 1 to 4.',13,10,'$'
+MSG_INVALID_ROOM    DB 'Invalid room. Valid range is 1 to 999.',13,10,'$'
+MSG_INVALID_SERVICE DB 'Invalid service. Choose 1, 2, or 3.',13,10,'$'
+MSG_INVALID_CLOTHES DB 'Invalid quantity. Valid range is 1 to 20.',13,10,'$'
+MSG_QUEUE_FULL      DB 13,10,'Queue is full. Process an order first.',13,10,'$'
+MSG_QUEUE_EMPTY     DB 13,10,'The laundry queue is empty.',13,10,'$'
+
+MSG_ORDER_ADDED   DB 13,10,'Order accepted. Token number: $'
+MSG_BILL_AMOUNT   DB 13,10,'Calculated bill: $'
+MSG_QUEUE_POS     DB 13,10,'Current queue position: $'
+MSG_PROCESSING    DB 13,10,'Processing the oldest order (FIFO):',13,10,'$'
+MSG_ORDER_REMOVED DB 'Order completed and removed from the queue.',13,10,'$'
+
+MSG_SUMMARY       DB 13,10,'================ QUEUE SUMMARY =================',13,10,'$'
+MSG_PENDING_COUNT DB 'Pending orders: $'
+MSG_PENDING_MONEY DB 13,10,'Pending bill total: $'
+MSG_PENDING_LIST  DB 13,10,'Pending order details:',13,10,'$'
+
+MSG_SEPARATOR DB '--------------------------------------------------',13,10,'$'
+LABEL_TOKEN   DB 'Token: $'
+LABEL_ROOM    DB ' | Room: $'
+LABEL_SERVICE DB ' | Service: $'
+LABEL_CLOTHES DB ' | Clothes: $'
+LABEL_BILL    DB ' | Bill: $'
+
+SERVICE_WASH    DB 'Wash only$'
+SERVICE_IRON    DB 'Wash and iron$'
+SERVICE_EXPRESS DB 'Express$'
+SERVICE_UNKNOWN DB 'Unknown$'
+
+MSG_BDT      DB ' BDT$'
+MSG_CONTINUE DB 13,10,'Press any key to return to the main menu...$'
+MSG_GOODBYE  DB 13,10,'Thank you. Laundry manager closed.',13,10,'$'
+NEW_LINE_MSG DB 13,10,'$'
+
+; Circular queue control variables
+QUEUE_COUNT     DB 0
+HEAD_INDEX      DB 0
+TAIL_INDEX      DB 0
+NEXT_TOKEN      DW 101
+PENDING_REVENUE DW 0
+
+; Parallel arrays: same index represents one order
+TOKEN_QUEUE   DW MAX_QUEUE DUP(0)
+ROOM_QUEUE    DW MAX_QUEUE DUP(0)
+SERVICE_QUEUE DB MAX_QUEUE DUP(0)
+CLOTH_QUEUE   DB MAX_QUEUE DUP(0)
+BILL_QUEUE    DW MAX_QUEUE DUP(0)
+
+.CODE
+
+MAIN PROC
+    MOV AX, @DATA
+    MOV DS, AX
+
+    LEA DX, TITLE_MSG
+    CALL PRINT_STR
+
+MAIN_MENU:
+    CALL SHOW_MENU
+    CALL READ_NUM
+
+    CMP AX, 1
+    JE MENU_ADD_ORDER
+    CMP AX, 2
+    JE MENU_PROCESS_ORDER
+    CMP AX, 3
+    JE MENU_VIEW_QUEUE
+    CMP AX, 4
+    JE MENU_EXIT
+
+    LEA DX, MSG_INVALID_MENU
+    CALL PRINT_STR
+    CALL WAIT_CONTINUE
+    JMP MAIN_MENU
+
+MENU_ADD_ORDER:
+    CALL ADD_ORDER
+    CALL WAIT_CONTINUE
+    JMP MAIN_MENU
+
+MENU_PROCESS_ORDER:
+    CALL PROCESS_ORDER
+    CALL WAIT_CONTINUE
+    JMP MAIN_MENU
+
+MENU_VIEW_QUEUE:
+    CALL VIEW_QUEUE
+    CALL WAIT_CONTINUE
+    JMP MAIN_MENU
+
+MENU_EXIT:
+    LEA DX, MSG_GOODBYE
+    CALL PRINT_STR
+
+    MOV AX, 4C00H
+    INT 21H
+MAIN ENDP
+
+SHOW_MENU PROC
+    PUSH DX
+    LEA DX, MENU_MSG
+    CALL PRINT_STR
+    POP DX
+    RET
+SHOW_MENU ENDP
+
+ADD_ORDER PROC
+    PUSH AX
+    PUSH BX
+    PUSH CX
+    PUSH DX
+    PUSH SI
+    PUSH DI
+
+    CMP QUEUE_COUNT, MAX_QUEUE
+    JB AO_SPACE_AVAILABLE
+
+    LEA DX, MSG_QUEUE_FULL
+    CALL PRINT_STR
+    JMP AO_DONE
+
+AO_SPACE_AVAILABLE:
+    XOR AX, AX
+    MOV AL, TAIL_INDEX
+    MOV SI, AX
+
+    MOV DI, SI
+    SHL DI, 1
+
+AO_READ_ROOM:
+    LEA DX, PROMPT_ROOM
+    CALL PRINT_STR
+    CALL READ_NUM
+
+    CMP AX, 1
+    JB AO_BAD_ROOM
+    CMP AX, 999
+    JA AO_BAD_ROOM
+
+    MOV ROOM_QUEUE[DI], AX
+    JMP AO_READ_SERVICE
+
+AO_BAD_ROOM:
+    LEA DX, MSG_INVALID_ROOM
+    CALL PRINT_STR
+    JMP AO_READ_ROOM
+
+AO_READ_SERVICE:
+    LEA DX, PROMPT_SERVICE
+    CALL PRINT_STR
+    CALL READ_NUM
+
+    CMP AX, 1
+    JB AO_BAD_SERVICE
+    CMP AX, 3
+    JA AO_BAD_SERVICE
+
+    MOV SERVICE_QUEUE[SI], AL
+    JMP AO_READ_CLOTHES
+
+AO_BAD_SERVICE:
+    LEA DX, MSG_INVALID_SERVICE
+    CALL PRINT_STR
+    JMP AO_READ_SERVICE
+
+AO_READ_CLOTHES:
+    LEA DX, PROMPT_CLOTHES
+    CALL PRINT_STR
+    CALL READ_NUM
+
+    CMP AX, 1
+    JB AO_BAD_CLOTHES
+    CMP AX, 20
+    JA AO_BAD_CLOTHES
+
+    MOV CLOTH_QUEUE[SI], AL
+
+    MOV AL, SERVICE_QUEUE[SI]
+    CMP AL, 1
+    JE AO_WASH_RATE
+    CMP AL, 2
+    JE AO_IRON_RATE
+
+    MOV BX, EXPRESS_RATE
+    JMP AO_CALCULATE_BILL
+
+AO_WASH_RATE:
+    MOV BX, WASH_RATE
+    JMP AO_CALCULATE_BILL
+
+AO_IRON_RATE:
+    MOV BX, IRON_RATE
+
+AO_CALCULATE_BILL:
+    XOR AX, AX
+    MOV AL, CLOTH_QUEUE[SI]
+    MUL BX
+
+    MOV BILL_QUEUE[DI], AX
+    ADD PENDING_REVENUE, AX
+
+    MOV CX, NEXT_TOKEN
+    MOV TOKEN_QUEUE[DI], CX
+
+    INC NEXT_TOKEN
+    INC QUEUE_COUNT
+    INC TAIL_INDEX
+
+    CMP TAIL_INDEX, MAX_QUEUE
+    JB AO_TAIL_READY
+    MOV TAIL_INDEX, 0
+
+AO_TAIL_READY:
+    LEA DX, MSG_ORDER_ADDED
+    CALL PRINT_STR
+    MOV AX, TOKEN_QUEUE[DI]
+    CALL PRINT_NUM
+
+    LEA DX, MSG_BILL_AMOUNT
+    CALL PRINT_STR
+    MOV AX, BILL_QUEUE[DI]
+    CALL PRINT_NUM
+
+    LEA DX, MSG_BDT
+    CALL PRINT_STR
+
+    LEA DX, MSG_QUEUE_POS
+    CALL PRINT_STR
+
+    XOR AX, AX
+    MOV AL, QUEUE_COUNT
+    CALL PRINT_NUM
+    CALL NEW_LINE
+    JMP AO_DONE
+
+AO_BAD_CLOTHES:
+    LEA DX, MSG_INVALID_CLOTHES
+    CALL PRINT_STR
+    JMP AO_READ_CLOTHES
+
+AO_DONE:
+    POP DI
+    POP SI
+    POP DX
+    POP CX
+    POP BX
+    POP AX
+    RET
+ADD_ORDER ENDP
+
+PROCESS_ORDER PROC
+    PUSH AX
+    PUSH BX
+    PUSH CX
+    PUSH DX
+    PUSH SI
+    PUSH DI
+
+    CMP QUEUE_COUNT, 0
+    JNE PO_HAVE_ORDER
+
+    LEA DX, MSG_QUEUE_EMPTY
+    CALL PRINT_STR
+    JMP PO_DONE
+
+PO_HAVE_ORDER:
+    XOR AX, AX
+    MOV AL, HEAD_INDEX
+    MOV SI, AX
+
+    MOV DI, SI
+    SHL DI, 1
+
+    LEA DX, MSG_PROCESSING
+    CALL PRINT_STR
+    CALL PRINT_ORDER_AT_INDEX
+
+    MOV AX, BILL_QUEUE[DI]
+    SUB PENDING_REVENUE, AX
+
+    MOV WORD PTR TOKEN_QUEUE[DI], 0
+    MOV WORD PTR ROOM_QUEUE[DI], 0
+    MOV BYTE PTR SERVICE_QUEUE[SI], 0
+    MOV BYTE PTR CLOTH_QUEUE[SI], 0
+    MOV WORD PTR BILL_QUEUE[DI], 0
+
+    INC HEAD_INDEX
+    CMP HEAD_INDEX, MAX_QUEUE
+    JB PO_HEAD_READY
+    MOV HEAD_INDEX, 0
+
+PO_HEAD_READY:
+    DEC QUEUE_COUNT
+
+    LEA DX, MSG_ORDER_REMOVED
+    CALL PRINT_STR
+
+PO_DONE:
+    POP DI
+    POP SI
+    POP DX
+    POP CX
+    POP BX
+    POP AX
+    RET
+PROCESS_ORDER ENDP
+
+VIEW_QUEUE PROC
+    PUSH AX
+    PUSH BX
+    PUSH CX
+    PUSH DX
+    PUSH SI
+    PUSH DI
+
+    LEA DX, MSG_SUMMARY
+    CALL PRINT_STR
+
+    LEA DX, MSG_PENDING_COUNT
+    CALL PRINT_STR
+
+    XOR AX, AX
+    MOV AL, QUEUE_COUNT
+    CALL PRINT_NUM
+
+    LEA DX, MSG_PENDING_MONEY
+    CALL PRINT_STR
+
+    MOV AX, PENDING_REVENUE
+    CALL PRINT_NUM
+
+    LEA DX, MSG_BDT
+    CALL PRINT_STR
+    CALL NEW_LINE
+
+    CMP QUEUE_COUNT, 0
+    JNE VQ_LIST_ORDERS
+
+    LEA DX, MSG_QUEUE_EMPTY
+    CALL PRINT_STR
+    JMP VQ_DONE
+
+VQ_LIST_ORDERS:
+    LEA DX, MSG_PENDING_LIST
+    CALL PRINT_STR
+
+    XOR AX, AX
+    MOV AL, HEAD_INDEX
+    MOV SI, AX
+
+    XOR CX, CX
+    MOV CL, QUEUE_COUNT
+
+VQ_LOOP:
+    CALL PRINT_ORDER_AT_INDEX
+
+    INC SI
+    CMP SI, MAX_QUEUE
+    JB VQ_INDEX_READY
+    XOR SI, SI
+
+VQ_INDEX_READY:
+    LOOP VQ_LOOP
+
+VQ_DONE:
+    POP DI
+    POP SI
+    POP DX
+    POP CX
+    POP BX
+    POP AX
+    RET
+VIEW_QUEUE ENDP
+
+PRINT_ORDER_AT_INDEX PROC
+    PUSH AX
+    PUSH BX
+    PUSH CX
+    PUSH DX
+    PUSH SI
+    PUSH DI
+
+    MOV DI, SI
+    SHL DI, 1
+
+    LEA DX, MSG_SEPARATOR
+    CALL PRINT_STR
+
+    LEA DX, LABEL_TOKEN
+    CALL PRINT_STR
+    MOV AX, TOKEN_QUEUE[DI]
+    CALL PRINT_NUM
+
+    LEA DX, LABEL_ROOM
+    CALL PRINT_STR
+    MOV AX, ROOM_QUEUE[DI]
+    CALL PRINT_NUM
+
+    LEA DX, LABEL_SERVICE
+    CALL PRINT_STR
+    MOV AL, SERVICE_QUEUE[SI]
+    CALL PRINT_SERVICE
+
+    LEA DX, LABEL_CLOTHES
+    CALL PRINT_STR
+    XOR AX, AX
+    MOV AL, CLOTH_QUEUE[SI]
+    CALL PRINT_NUM
+
+    LEA DX, LABEL_BILL
+    CALL PRINT_STR
+    MOV AX, BILL_QUEUE[DI]
+    CALL PRINT_NUM
+
+    LEA DX, MSG_BDT
+    CALL PRINT_STR
+    CALL NEW_LINE
+
+    POP DI
+    POP SI
+    POP DX
+    POP CX
+    POP BX
+    POP AX
+    RET
+PRINT_ORDER_AT_INDEX ENDP
+
+PRINT_SERVICE PROC
+    PUSH AX
+    PUSH DX
+
+    CMP AL, 1
+    JE PS_WASH
+    CMP AL, 2
+    JE PS_IRON
+    CMP AL, 3
+    JE PS_EXPRESS
+
+    LEA DX, SERVICE_UNKNOWN
+    JMP PS_DISPLAY
+
+PS_WASH:
+    LEA DX, SERVICE_WASH
+    JMP PS_DISPLAY
+
+PS_IRON:
+    LEA DX, SERVICE_IRON
+    JMP PS_DISPLAY
+
+PS_EXPRESS:
+    LEA DX, SERVICE_EXPRESS
+
+PS_DISPLAY:
+    CALL PRINT_STR
+
+    POP DX
+    POP AX
+    RET
+PRINT_SERVICE ENDP
+
+READ_NUM PROC
+    PUSH BX
+    PUSH CX
+    PUSH DX
+
+    XOR BX, BX
+
+RN_LOOP:
+    MOV AH, 01H
+    INT 21H
+
+    CMP AL, 0DH
+    JE RN_DONE
+
+    CMP AL, '0'
+    JB RN_INVALID_INPUT
+    CMP AL, '9'
+    JA RN_INVALID_INPUT
+
+    SUB AL, '0'
+
+    CMP BX, 6553
+    JA RN_INVALID_INPUT
+    JB RN_APPEND_DIGIT
+
+    CMP AL, 5
+    JA RN_INVALID_INPUT
+
+RN_APPEND_DIGIT:
+    XOR AH, AH
+    PUSH AX
+
+    MOV AX, BX
+    MOV CX, 10
+    MUL CX
+    MOV BX, AX
+
+    POP AX
+    ADD BX, AX
+    JMP RN_LOOP
+
+RN_INVALID_INPUT:
+    MOV AH, 02H
+    MOV DL, 07H
+    INT 21H
+
+RN_DISCARD_LINE:
+    MOV AH, 01H
+    INT 21H
+    CMP AL, 0DH
+    JNE RN_DISCARD_LINE
+
+    LEA DX, NEW_LINE_MSG
+    CALL PRINT_STR
+
+    XOR AX, AX
+    JMP RN_RETURN
+
+RN_DONE:
+    LEA DX, NEW_LINE_MSG
+    CALL PRINT_STR
+    MOV AX, BX
+
+RN_RETURN:
+    POP DX
+    POP CX
+    POP BX
+    RET
+READ_NUM ENDP
+
+PRINT_NUM PROC
+    PUSH AX
+    PUSH BX
+    PUSH CX
+    PUSH DX
+
+    CMP AX, 0
+    JNE PN_CONVERT
+
+    MOV DL, '0'
+    MOV AH, 02H
+    INT 21H
+    JMP PN_DONE
+
+PN_CONVERT:
+    XOR CX, CX
+    MOV BX, 10
+
+PN_DIVIDE_LOOP:
+    XOR DX, DX
+    DIV BX
+
+    PUSH DX
+    INC CX
+
+    CMP AX, 0
+    JNE PN_DIVIDE_LOOP
+
+PN_PRINT_LOOP:
+    POP DX
+    ADD DL, '0'
+
+    MOV AH, 02H
+    INT 21H
+    LOOP PN_PRINT_LOOP
+
+PN_DONE:
+    POP DX
+    POP CX
+    POP BX
+    POP AX
+    RET
+PRINT_NUM ENDP
+
+PRINT_STR PROC
+    PUSH AX
+
+    MOV AH, 09H
+    INT 21H
+
+    POP AX
+    RET
+PRINT_STR ENDP
+
+NEW_LINE PROC
+    PUSH DX
+
+    LEA DX, NEW_LINE_MSG
+    CALL PRINT_STR
+
+    POP DX
+    RET
+NEW_LINE ENDP
+
+WAIT_CONTINUE PROC
+    PUSH AX
+    PUSH DX
+
+    LEA DX, MSG_CONTINUE
+    CALL PRINT_STR
+
+    MOV AH, 08H
+    INT 21H
+
+    CALL NEW_LINE
+
+    POP DX
+    POP AX
+    RET
+WAIT_CONTINUE ENDP
+
+END MAIN

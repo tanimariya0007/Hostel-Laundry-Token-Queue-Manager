@@ -1,0 +1,20 @@
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor temporary files
+*.bak
+*.tmp
+*.swp
+~*
+
+# Compiled/build output (keep source code tracked)
+*.obj
+*.exe
+*.com
+*.bin
+*.lst
+*.map
+
+# EMU8086 generated/temporary files
+*.em8
